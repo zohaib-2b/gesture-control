@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Fast Mirror Hand Gesture Ball</title>
+
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      overflow: hidden;
+      background: radial-gradient(circle at center, #1a1a2e 0%, #0a0a0a 100%);
+      font-family: Segoe UI, Tahoma, sans-serif;
+    }
+
+    canvas {
+      position: absolute;
+      inset: 0;
+    }
+
+    video {
+      display: none;
+    }
+
+    #info {
+      position: absolute;
+      top: 16px;
+      left: 16px;
+      background: rgba(0,0,0,0.65);
+      backdrop-filter: blur(10px);
+      border: 1px solid rgba(0,246,255,0.3);
+      border-radius: 10px;
+      padding: 14px 18px;
+      color: #aaa;
+      font-size: 12px;
+      z-index: 10;
+    }
+
+    #info h3 {
+      color: #00f6ff;
+      margin-bottom: 6px;
+      font-size: 15px;
+    }
+
+    .active {
+      color: #51ff00;
+      font-weight: bold;
+    }
+  </style>
+</head>
+
+<body>
+
+<div id="info">
+  <h3>🖐 Hand Gesture Control</h3>
+  <div>Status: <span id="status">Init</span></div>
+  <div>Gesture: <span id="gesture">None</span></div>
+  <div>Ball Size: <span id="size">100</span></div>
+  <div>FPS: <span id="fps">0</span></div>
+</div>
+
+<video id="video" autoplay playsinline></video>
+<canvas id="canvas"></canvas>
+
+<!-- MediaPipe -->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+
+<script>
+/* ======================
+   Canvas
+====================== */
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d", { alpha: false });
+
+function resize() {
+  canvas.width = innerWidth;
+  canvas.height = innerHeight;
+}
+resize();
+addEventListener("resize", resize);
+
+/* ======================
+   Central Ball
+====================== */
+class Ball {
+  constructor() {
+    this.x = canvas.width / 2;
+    this.y = canvas.height / 2;
+    this.tx = this.x;
+    this.ty = this.y;
+    this.r = 100;
+    this.tr = 100;
+    this.phase = 0;
+  }
+
+  update() {
+    this.x += (this.tx - this.x) * 0.25;   // FAST follow
+    this.y += (this.ty - this.y) * 0.25;
+    this.r += (this.tr - this.r) * 0.3;
+    this.phase += 0.04;
+  }
+
+  draw() {
+    const pulse = Math.sin(this.phase) * 0.08 + 1;
+
+    const glow = ctx.createRadialGradient(
+      this.x, this.y, 0,
+      this.x, this.y, this.r * 1.4
+    );
+    glow.addColorStop(0, "rgba(0,246,255,0.6)");
+    glow.addColorStop(1, "rgba(0,0,0,0)");
+
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, this.r * 1.4, 0, Math.PI * 2);
+    ctx.fill();
+
+    const core = ctx.createRadialGradient(
+      this.x - this.r * 0.3,
+      this.y - this.r * 0.3,
+      0,
+      this.x,
+      this.y,
+      this.r
+    );
+    core.addColorStop(0, "#00f6ff");
+    core.addColorStop(0.6, "#8a2be2");
+    core.addColorStop(1, "#ff1493");
+
+    ctx.shadowBlur = 30;
+    ctx.shadowColor = "#00f6ff";
+    ctx.fillStyle = core;
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, this.r * pulse, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+  }
+}
+
+const ball = new Ball();
+
+/* ======================
+   Hand Tracking
+====================== */
+const video = document.getElementById("video");
+const statusEl = document.getElementById("status");
+const gestureEl = document.getElementById("gesture");
+const sizeEl = document.getElementById("size");
+
+const hands = new Hands({
+  locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`
+});
+
+hands.setOptions({
+  maxNumHands: 1,
+  modelComplexity: 0,          // 🚀 FAST
+  minDetectionConfidence: 0.5,
+  minTrackingConfidence: 0.5
+});
+
+let lastPinch = null;
+let baseSize = 100;
+
+const dist = (a,b) =>
+  Math.hypot(a.x - b.x, a.y - b.y);
+
+hands.onResults(res => {
+  if (!res.multiHandLandmarks?.length) {
+    statusEl.textContent = "No hand";
+    gestureEl.textContent = "None";
+    lastPinch = null;
+    return;
+  }
+
+  statusEl.textContent = "Active";
+  statusEl.className = "active";
+
+  const lm = res.multiHandLandmarks[0];
+  const index = lm[8];
+  const thumb = lm[4];
+
+  // 🪞 MIRROR FIX
+  const x = (1 - index.x) * canvas.width;
+  const y = index.y * canvas.height;
+
+  const pinch = dist(index, thumb);
+
+  if (pinch < 0.08) {
+    gestureEl.textContent = "Pinch";
+    if (lastPinch !== null) {
+      baseSize += (pinch - lastPinch) * 1600; // FAST zoom
+      baseSize = Math.max(40, Math.min(280, baseSize));
+      ball.tr = baseSize;
+      sizeEl.textContent = Math.round(baseSize);
+    }
+    lastPinch = pinch;
+  } else {
+    gestureEl.textContent = "Move";
+    ball.tx = x;
+    ball.ty = y;
+    lastPinch = null;
+  }
+});
+
+const camera = new Camera(video, {
+  onFrame: async () => hands.send({ image: video }),
+  width: 480,
+  height: 360
+});
+camera.start();
+
+/* ======================
+   FPS
+====================== */
+let frames = 0;
+let last = performance.now();
+const fpsEl = document.getElementById("fps");
+
+function fps() {
+  frames++;
+  const now = performance.now();
+  if (now - last > 1000) {
+    fpsEl.textContent = frames;
+    frames = 0;
+    last = now;
+  }
+}
+
+/* ======================
+   Loop
+====================== */
+function loop() {
+  ctx.fillStyle = "#0a0a0a";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  ball.update();
+  ball.draw();
+
+  fps();
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+
+</body>
+</html>
